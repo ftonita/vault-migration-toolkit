@@ -2,6 +2,15 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Russian README (`README.ru.md`) with a language switcher in both READMEs.
+- `examples/`: sample export in JSON and CSV, annotated `rules.yml`, adapters for `.env` trees, nested JSON/YAML and Kubernetes Secrets (with sample inputs), minimal Vault migration policy, consumer read policy, local Vault compose file.
+- `docs/SOURCES.md` / `docs/SOURCES.ru.md`: export format, adapters, recipes (AWS Secrets Manager, KeePassXC CSV), writing an adapter.
+- `docs/VAULT.md` / `docs/VAULT.ru.md`: layout in Vault, mounts, token policy, running and resuming, checks with the `vault` CLI, switching consumers, rollback, troubleshooting.
+- Tests for `examples/`; CI runs `examples/` against real Vault with a non-root token limited by the example policy.
+
 ## [1.0.0] - 2026-10-08
 
 ### Added

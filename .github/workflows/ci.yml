@@ -38,3 +38,16 @@ jobs:
           vault-migrate apply $A --execute --create-mounts
           vault-migrate apply $A --execute        # idempotent: all skipped
           vault-migrate verify $A
+      - name: examples/ with the minimal migration policy (non-root token)
+        run: |
+          # Same policy and rules as examples/, under an ex- prefix so they do not collide with the demo mounts.
+          sed 's/kv-/ex-/g' examples/vault/migration-policy.hcl > ex-policy.hcl
+          sed 's/^mount_prefix: kv-/mount_prefix: ex-/' examples/rules.yml > ex-rules.yml
+          jq -n --rawfile p ex-policy.hcl '{policy: $p}' |
+            curl -sf -X PUT -H "X-Vault-Token: $VAULT_TOKEN" --data @- "$VAULT_ADDR/v1/sys/policies/acl/vault-migration"
+          export VAULT_TOKEN=$(curl -sf -X POST -H "X-Vault-Token: $VAULT_TOKEN" \
+            -d '{"policies":["vault-migration"],"ttl":"15m"}' "$VAULT_ADDR/v1/auth/token/create" | jq -r .auth.client_token)
+          A="--source examples/legacy.json --rules ex-rules.yml --state ex-state --backend http"
+          vault-migrate apply $A --execute --create-mounts
+          vault-migrate apply $A --execute
+          vault-migrate verify $A

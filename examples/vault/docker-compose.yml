@@ -1,0 +1,14 @@
+# Local Vault dev server for rehearsing a migration. In-memory, unsealed, root token below.
+# NEVER put real secrets into it.
+#
+#   docker compose -f examples/vault/docker-compose.yml up -d
+#   export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=dev-root-token
+services:
+  vault:
+    image: hashicorp/vault:1.17
+    cap_add: [IPC_LOCK]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "127.0.0.1:8200:8200"

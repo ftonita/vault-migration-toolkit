@@ -1,5 +1,7 @@
 # vault-migration-toolkit
 
+🇬🇧 **English** | [🇷🇺 Русский](README.ru.md)
+
 [![ci](https://github.com/ftonita/vault-migration-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/ftonita/vault-migration-toolkit/actions)
 ![Vault](https://img.shields.io/badge/HashiCorp_Vault-KV_v2-FFEC6E?logo=vault&logoColor=black)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -61,24 +63,64 @@ EXECUTED: written=1 ... (with --overwrite)
 verified=36 mismatched=0 missing=0
 ```
 
-## Against a real Vault
+## Migrate your own secrets
 
-```bash
-export VAULT_ADDR=https://vault.example.com VAULT_TOKEN=...     # https enforced (http only for localhost)
-vault-migrate apply --source legacy.json --rules rules.yml --state state --backend http --execute
+The fastest route from a legacy store to a verified Vault. Each step links to the detailed guide.
+
+**1. Turn the source into an export.** The toolkit reads a flat JSON/CSV list of secrets ([format and samples](docs/SOURCES.md#1-the-export-format)). Use a ready adapter, a recipe, or rename CSV columns:
+
+| Your source | How |
+|---|---|
+| `.env` files `<team>/<app>/<env>.env` | `python examples/adapters/env_files.py secrets/ --out legacy.json` |
+| Nested JSON / YAML config | `python examples/adapters/nested_json.py config.json --out legacy.json` |
+| Kubernetes Secrets | `kubectl get secrets -A -o json \| python examples/adapters/k8s_secrets.py - --out legacy.json` |
+| AWS Secrets Manager, password-manager CSV | [recipes](docs/SOURCES.md#3-recipes-for-other-sources) |
+| Spreadsheet / any CSV | rename the header to `id,name,value,app,env,team,kind,last_rotated,consumers` |
+| Anything else | [write a 20-line adapter](docs/SOURCES.md#4-writing-your-own-adapter) |
+
+A minimal record (`id`, `name`, `value` are required; `team`, `env`, `app` decide the target path):
+
+```json
+{"id": "LEG-0001", "name": "db_password", "value": "...", "app": "orders", "env": "production",
+ "team": "Payments Team", "kind": "db_password", "last_rotated": "2026-08-14", "consumers": ["orders-api"]}
 ```
 
-The token needs create/read on `<mount>/data/*`, `<mount>/metadata/*` and, with `--create-mounts`, `sys/mounts`. Use a short-lived token for the migration window.
-
-### Mapping rules (`rules.yml`)
+**2. Write the mapping rules.** Start from [`examples/rules.yml`](examples/rules.yml) and iterate with `plan` until the manual queue only holds records that need a human:
 
 ```yaml
-mount_prefix: kv-
+mount_prefix: kv-                       # kv-<team>/<env>/<app>/<name>
 allowed_envs: [dev, stage, prod]
 team_aliases: { "Payments Team": payments }
 env_aliases:  { production: prod, staging: stage }
 app_owners:   { reports: platform }     # fallback when the record has no team
 ```
+
+```bash
+vault-migrate inventory --source legacy.json --state migration-state --out inventory.md   # no Vault needed
+vault-migrate plan      --source legacy.json --rules rules.yml --out plan.md
+```
+
+**3. Prepare Vault.** Load [`examples/vault/migration-policy.hcl`](examples/vault/migration-policy.hcl) (one block per team mount), issue a short-lived token, and create the `kv-<team>` mounts or allow `--create-mounts` ([details](docs/VAULT.md#3-prepare-the-production-vault)). Rehearse first on a local dev Vault: `docker compose -f examples/vault/docker-compose.yml up -d`.
+
+**4. Migrate and verify.**
+
+```bash
+export VAULT_ADDR=https://vault.example.com VAULT_TOKEN=...     # https enforced (http only for localhost)
+A="--source legacy.json --rules rules.yml --state migration-state --backend http"
+vault-migrate apply  $A                       # dry run
+vault-migrate apply  $A --execute             # add --create-mounts if the token may create mounts
+vault-migrate verify $A                       # exit 0 = every secret in Vault matches the export
+```
+
+**5. Switch consumers, then clean up.** Applications read `kv-<team>/data/<env>/<app>/<name>` → `.data.data.value` ([CLI, API, Vault Agent, Kubernetes examples](docs/VAULT.md#6-switch-applications-to-vault)). Revoke the migration token and shred the export ([rollback and cleanup](docs/VAULT.md#7-roll-back-and-clean-up)).
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/SOURCES.md](docs/SOURCES.md) | Export format field by field, adapters, recipes for other stores, writing an adapter |
+| [docs/VAULT.md](docs/VAULT.md) | What is written to Vault, mounts, token policy, running and resuming, checking with the `vault` CLI, consumers, rollback, troubleshooting |
+| [examples/](examples) | `legacy.json` / `legacy.csv` sample export, `rules.yml`, adapters with sample inputs, Vault policies, local Vault compose file |
 
 ## Safety design
 
@@ -89,12 +131,12 @@ app_owners:   { reports: platform }     # fallback when the record has no team
 
 ## What is verified
 
-Reproduce with `pip install -e ".[dev]" && pytest` (68 tests, 98% line coverage):
+Reproduce with `pip install -e ".[dev]" && pytest` (75 tests, 98% line coverage):
 
 - Unit tests for parsing, redaction, fingerprints, rules, analysis, planning, migration (dry-run, idempotence, conflicts, CAS overwrite, partial failure and resume) and ledger contents.
 - The HTTP client is tested over real HTTP against `tests/stub_vault.py`, a **stub that implements only the KV v2 subset used here** (data, metadata, mounts, CAS, 5xx, 403). It is not Vault, so semantics such as mount permissions and real CAS error text are assumptions from the API documentation.
 - End-to-end CLI flow on the synthetic dataset, including tampering and recovery (the output above).
+- `examples/`: the JSON and CSV samples load to identical records, the sample plan matches the docs, and every adapter's output maps cleanly with `plan` (one is also taken through `apply` and `verify`).
+- The CI job `real-vault` runs the whole flow (`apply --execute --create-mounts`, an idempotent re-run, `verify`) against a **real Vault 1.17 dev server**; it passed on the first run (2026-10-09). It also runs `examples/` with a **non-root token** limited by `examples/vault/migration-policy.hcl`.
 
-- The CI job `real-vault` runs the whole flow (`apply --execute --create-mounts`, an idempotent re-run, `verify`) against a **real Vault 1.17 dev server**; it passed on the first run (2026-10-09).
-
-**Not verified:** Vault Enterprise namespaces, production-style Vault (Raft, policies, auth methods), very large exports (the export is held in memory), and non-KV legacy sources. Writing custom metadata is a second request, so it is not atomic with the value.
+**Not verified:** Vault Enterprise namespaces, production-style Vault (Raft, auth methods other than tokens), very large exports (the export is held in memory), and non-KV legacy sources. Writing custom metadata is a second request, so it is not atomic with the value.
