@@ -1,0 +1,18 @@
+# Mapping rules: how (team, env, app, name) from the export become a Vault mount and path.
+# Target layout: <mount_prefix><team>/<env>/<app>/<name>, e.g. kv-payments/prod/orders/db_password.
+# Every key is optional; unknown keys are an error (protects against typos).
+
+mount_prefix: kv-                 # one KV v2 mount per team: kv-payments, kv-scoring, ...
+
+allowed_envs: [dev, stage, prod]  # anything else (after aliases) goes to the manual queue
+
+team_aliases:                     # legacy team name -> canonical team (matched case-insensitively)
+  "Payments Team": payments
+
+env_aliases:                      # legacy env name -> canonical env
+  production: prod
+  staging: stage
+  development: dev
+
+app_owners:                       # fallback owner when a record has an empty "team"
+  reports: platform

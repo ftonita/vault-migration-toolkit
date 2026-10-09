@@ -77,15 +77,23 @@ def _cmd_apply(a: argparse.Namespace) -> int:
         create_mounts=a.create_mounts,
     )
     mode = "EXECUTED" if a.execute else "DRY RUN (nothing written; add --execute)"
+    repaired = f" metadata_repaired={len(res.metadata_repaired)}" if res.metadata_repaired else ""
     print(
         f"{mode}: written={len(res.written)} would_write={len(res.would_write)} "
         f"skipped={len(res.skipped)} conflicts={len(res.conflicts)} failed={len(res.failed)} "
-        f"manual_queue={len(unmapped)}"
+        f"manual_queue={len(unmapped)}{repaired}"
     )
+    blocked = {sid for ids in res.missing_mounts.values() for sid in ids}
+    for mount, ids in sorted(res.missing_mounts.items()):
+        reason = res.mount_errors.get(mount, "create it, or add --create-mounts")
+        print(f"  missing mount: {mount}/ ({len(ids)} secrets; {reason})")
+    verb = "created" if a.execute else "would create"
+    for mount in sorted(res.mounts_to_create):
+        print(f"  {verb} mount: {mount}/")
     for sid in res.conflicts:
         print(f"  conflict: {sid} (target exists with a different value; use --overwrite to replace)")
-    for sid in res.failed:
-        print(f"  failed: {sid} (see ledger)")
+    for sid in (sid for sid in res.failed if sid not in blocked):
+        print(f"  failed: {sid} ({res.errors.get(sid, 'see ledger')})")
     return 0 if res.ok else 1
 
 

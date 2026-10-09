@@ -1,0 +1,112 @@
+[
+  {
+    "id": "LEG-0001",
+    "name": "db_password",
+    "value": "SYNTHETIC-db-9f2c41d07a6e4b1c8d35",
+    "app": "orders",
+    "env": "prod",
+    "team": "payments",
+    "kind": "db_password",
+    "last_rotated": "2026-08-14",
+    "consumers": ["orders-api", "orders-worker"]
+  },
+  {
+    "id": "LEG-0002",
+    "name": "db_password",
+    "value": "SYNTHETIC-db-1b7e93c2f0a84d6e5c19",
+    "app": "orders",
+    "env": "staging",
+    "team": "payments",
+    "kind": "db_password",
+    "last_rotated": "2026-07-02",
+    "consumers": ["orders-api"]
+  },
+  {
+    "id": "LEG-0003",
+    "name": "stripe_api_key",
+    "value": "SYNTHETIC-api-4c0d8e2a7b95f1361e7a",
+    "app": "orders",
+    "env": "prod",
+    "team": "payments",
+    "kind": "api_key",
+    "last_rotated": "2026-05-20",
+    "consumers": ["orders-api"]
+  },
+  {
+    "id": "LEG-0004",
+    "name": "db_password",
+    "value": "SYNTHETIC-db-77a1e05c3d9b42f8a6e0",
+    "app": "ledger",
+    "env": "production",
+    "team": "Payments Team",
+    "kind": "db_password",
+    "last_rotated": "2026-09-01",
+    "consumers": ["ledger-svc"]
+  },
+  {
+    "id": "LEG-0005",
+    "name": "jwt_secret",
+    "value": "SYNTHETIC-jwt-c58b2f9e0d1a7346bb2c",
+    "app": "scorer",
+    "env": "prod",
+    "team": "scoring",
+    "kind": "token",
+    "last_rotated": "2024-11-30",
+    "consumers": "scorer-api;scorer-batch"
+  },
+  {
+    "id": "LEG-0006",
+    "name": "s3_secret_key",
+    "value": "SYNTHETIC-s3-0e6f3a92c7d84b15f2a8",
+    "app": "reports",
+    "env": "staging",
+    "team": "",
+    "kind": "api_key",
+    "last_rotated": "2026-04-04",
+    "consumers": ["reports-cron"]
+  },
+  {
+    "id": "LEG-0007",
+    "name": "tls_key_passphrase",
+    "value": "changeme",
+    "app": "gateway",
+    "env": "dev",
+    "team": "platform",
+    "kind": "password",
+    "last_rotated": "2025-12-01",
+    "consumers": ["gateway"]
+  },
+  {
+    "id": "LEG-0008",
+    "name": "oauth_client_secret",
+    "value": "SYNTHETIC-oauth-5a9d1c3e7f20b846d1",
+    "app": "gateway",
+    "env": "prod",
+    "team": "platform",
+    "kind": "token",
+    "last_rotated": "",
+    "consumers": ["gateway"]
+  },
+  {
+    "id": "LEG-0009",
+    "name": "db_password",
+    "value": "SYNTHETIC-db-e3b8a0f61c2d975a4e3f",
+    "app": "orders",
+    "env": "qa",
+    "team": "payments",
+    "kind": "db_password",
+    "last_rotated": "2026-06-11",
+    "consumers": ["orders-api"]
+  },
+  {
+    "id": "LEG-0010",
+    "name": "ftp_password",
+    "value": "SYNTHETIC-ftp-2d4f6a8c0e1b3d5f7a9c",
+    "app": "legacy-cron",
+    "env": "prod",
+    "team": "",
+    "kind": "password",
+    "last_rotated": "2023-02-17",
+    "consumers": []
+  }
+]

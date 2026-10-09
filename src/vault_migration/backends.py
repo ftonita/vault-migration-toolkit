@@ -1,6 +1,8 @@
 """Vault KV v2 backends.
 
 * VaultHTTP: the real client (stdlib only, TLS verified, retries on 5xx).
+  A missing mount is detected from the read itself (404 "no handler for route"), so the migration
+  token needs no access to sys/mounts unless mounts are created.
 * MemoryVault / FileFakeVault: in-process fakes for tests and offline demos. Never for real secrets.
 """
 
@@ -24,6 +26,14 @@ class CasMismatch(VaultError):
     """check-and-set failed: someone else wrote the secret first."""
 
 
+class MountMissing(VaultError):
+    """No secrets engine is mounted at the requested mount."""
+
+
+class MetadataError(VaultError):
+    """The value was written, but its custom metadata was not."""
+
+
 @dataclass(frozen=True)
 class Stored:
     data: dict[str, str]
@@ -38,6 +48,8 @@ class Backend(Protocol):
         self, mount: str, path: str, data: dict[str, str], cas: int, metadata: dict[str, str]
     ) -> int: ...
 
+    def write_metadata(self, mount: str, path: str, metadata: dict[str, str]) -> None: ...
+
     def mount_exists(self, mount: str) -> bool: ...
 
     def create_mount(self, mount: str) -> None: ...
@@ -49,17 +61,23 @@ class MemoryVault:
         self.store: dict[tuple[str, str], Stored] = {}
 
     def read(self, mount: str, path: str) -> Stored | None:
+        if mount not in self.mounts:
+            raise MountMissing(f"no secret engine mounted at {mount}/")
         return self.store.get((mount, path))
 
     def write(self, mount, path, data, cas, metadata):  # noqa: ANN001
         if mount not in self.mounts:
-            raise VaultError(f"no secret engine mounted at {mount}/")
+            raise MountMissing(f"no secret engine mounted at {mount}/")
         current = self.store.get((mount, path))
         if cas != (current.version if current else 0):
             raise CasMismatch(f"{mount}/{path}: check-and-set mismatch")
         version = (current.version if current else 0) + 1
         self.store[(mount, path)] = Stored(dict(data), version, dict(metadata))
         return version
+
+    def write_metadata(self, mount: str, path: str, metadata: dict[str, str]) -> None:
+        current = self.store[(mount, path)]
+        self.store[(mount, path)] = Stored(current.data, current.version, dict(metadata))
 
     def mount_exists(self, mount: str) -> bool:
         return mount in self.mounts
@@ -96,6 +114,10 @@ class FileFakeVault(MemoryVault):
         version = super().write(mount, path, data, cas, metadata)
         self._flush()
         return version
+
+    def write_metadata(self, mount: str, path: str, metadata: dict[str, str]) -> None:
+        super().write_metadata(mount, path, metadata)
+        self._flush()
 
     def create_mount(self, mount: str) -> None:
         super().create_mount(mount)
@@ -152,24 +174,38 @@ class VaultHTTP:
     def read(self, mount: str, path: str) -> Stored | None:
         status, body = self._request("GET", f"{mount}/data/{path}")
         if status == 404:
-            return None
+            if "no handler for route" in json.dumps(body):
+                raise MountMissing(f"no secret engine mounted at {mount}/")
+            meta = ((body or {}).get("data") or {}).get("metadata")
+            if not meta:
+                return None
+            # soft-deleted: no data, but the version still counts for check-and-set
+            return Stored({}, meta["version"], meta.get("custom_metadata") or {})
         if status != 200:
             raise VaultError(f"read {mount}/{path}: HTTP {status}")
         d = body["data"]
-        return Stored(d["data"], d["metadata"]["version"], d["metadata"].get("custom_metadata") or {})
+        return Stored(d["data"] or {}, d["metadata"]["version"], d["metadata"].get("custom_metadata") or {})
 
     def write(self, mount, path, data, cas, metadata):  # noqa: ANN001
         status, body = self._request("POST", f"{mount}/data/{path}", {"options": {"cas": cas}, "data": data})
         if status == 400 and "check-and-set" in json.dumps(body):
             raise CasMismatch(f"{mount}/{path}: check-and-set mismatch")
+        if status == 404 and "no handler for route" in json.dumps(body):
+            raise MountMissing(f"no secret engine mounted at {mount}/")
         if status not in (200, 204):
             raise VaultError(f"write {mount}/{path}: HTTP {status}")
         version = body["data"]["version"]
         if metadata:
-            s2, _ = self._request("POST", f"{mount}/metadata/{path}", {"custom_metadata": metadata})
-            if s2 not in (200, 204):
-                raise VaultError(f"metadata {mount}/{path}: HTTP {s2}")
+            try:
+                self.write_metadata(mount, path, metadata)
+            except VaultError as exc:
+                raise MetadataError(f"value written as version {version}, but {exc}") from exc
         return version
+
+    def write_metadata(self, mount: str, path: str, metadata: dict[str, str]) -> None:
+        status, _ = self._request("POST", f"{mount}/metadata/{path}", {"custom_metadata": metadata})
+        if status not in (200, 204):
+            raise VaultError(f"metadata {mount}/{path}: HTTP {status}")
 
     def mount_exists(self, mount: str) -> bool:
         status, body = self._request("GET", "sys/mounts")
@@ -178,6 +214,10 @@ class VaultHTTP:
         return f"{mount}/" in body.get("data", body)
 
     def create_mount(self, mount: str) -> None:
-        status, _ = self._request("POST", f"sys/mounts/{mount}", {"type": "kv", "options": {"version": "2"}})
+        status, body = self._request(
+            "POST", f"sys/mounts/{mount}", {"type": "kv", "options": {"version": "2"}}
+        )
+        if status == 400 and "already in use" in json.dumps(body):
+            return  # created meanwhile by someone else
         if status not in (200, 204):
             raise VaultError(f"create mount {mount}: HTTP {status}")

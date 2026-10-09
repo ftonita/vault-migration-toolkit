@@ -122,3 +122,87 @@ def test_cas_mismatch_is_reported_as_failure(prepared, ledger, state_key):
 
 def test_single_item_target_str():
     assert str(PlanItem("1", Target("kv-a", "dev/x/y")).target) == "kv-a/dev/x/y"
+
+
+def test_dry_run_reports_missing_mounts_per_mount(prepared, memory_vault, ledger, state_key):
+    res = run(prepared, memory_vault, ledger, state_key, execute=False, create_mounts=False)
+    assert set(res.missing_mounts) == {"kv-payments", "kv-scoring", "kv-platform"}
+    assert sum(map(len, res.missing_mounts.values())) == 36 == len(res.failed) and not res.ok
+    assert ledger.entries() == [] and memory_vault.mounts == set()
+
+
+def test_dry_run_with_create_mounts_lists_them_without_creating(prepared, memory_vault, ledger, state_key):
+    res = run(prepared, memory_vault, ledger, state_key, execute=False)
+    assert res.mounts_to_create == {"kv-payments", "kv-scoring", "kv-platform"} and res.ok
+    assert memory_vault.mounts == set()
+
+
+def test_missing_metadata_is_repaired_on_rerun(prepared, memory_vault, ledger, state_key):
+    run(prepared, memory_vault, ledger, state_key)
+    k = ("kv-payments", "dev/orders/db_password")
+    old = memory_vault.store[k]
+    memory_vault.store[k] = old.__class__(old.data, old.version, {"owner": "kept"})
+    dry = run(prepared, memory_vault, ledger, state_key, execute=False)
+    assert dry.metadata_repaired == ["S001"] and memory_vault.store[k].custom_metadata == {"owner": "kept"}
+    res = run(prepared, memory_vault, ledger, state_key)
+    assert res.metadata_repaired == ["S001"] and len(res.skipped) == 35 and res.ok
+    md = memory_vault.store[k].custom_metadata
+    assert md["legacy_id"] == "S001" and md["owner"] == "kept" and memory_vault.store[k].version == 1
+    assert any(e.status == "metadata_written" and e.secret_id == "S001" for e in ledger.entries())
+    assert not run(prepared, memory_vault, ledger, state_key).metadata_repaired
+
+
+def test_failed_metadata_write_is_reported_and_repaired_later(prepared, ledger, state_key):
+    from vault_migration.backends import MetadataError
+
+    class NoMetadata(MemoryVault):
+        broken = True
+
+        def write(self, mount, path, data, cas, metadata):  # noqa: ANN001
+            version = super().write(mount, path, data, cas, {})
+            if self.broken:
+                raise MetadataError(f"value written as version {version}, but metadata: HTTP 403")
+            self.write_metadata(mount, path, metadata)
+            return version
+
+    v = NoMetadata()
+    first = run(prepared, v, ledger, state_key)
+    assert len(first.written) == 36 == len(first.failed) and not first.ok
+    assert "re-run to repair" in first.errors["S001"]
+    second = run(prepared, v, ledger, state_key)
+    assert len(second.metadata_repaired) == 36 and second.ok and not second.written
+    assert all(s.custom_metadata["migrated_by"] == "vault-migration-toolkit" for s in v.store.values())
+
+
+def test_soft_deleted_target_is_a_conflict_and_overwrite_continues_its_versions(
+    prepared, memory_vault, ledger, state_key
+):
+    run(prepared, memory_vault, ledger, state_key)
+    k = ("kv-payments", "dev/orders/db_password")
+    memory_vault.store[k] = memory_vault.store[k].__class__({}, 1, {})  # how VaultHTTP reads a deleted secret
+    assert run(prepared, memory_vault, ledger, state_key).conflicts == ["S001"]
+    assert run(prepared, memory_vault, ledger, state_key, overwrite=True).written == ["S001"]
+    assert memory_vault.store[k].version == 2
+
+
+def test_failed_mount_creation_is_tried_once_and_reported(prepared, ledger, state_key):
+    class NoSys(MemoryVault):
+        attempts = 0
+
+        def create_mount(self, mount):  # noqa: ANN001
+            self.attempts += 1
+            raise VaultError(f"create mount {mount}: HTTP 403")
+
+    v = NoSys()
+    res = run(prepared, v, ledger, state_key)
+    assert v.attempts == 3 and not res.mounts_to_create and not res.written
+    assert res.mount_errors["kv-payments"] == "create mount kv-payments: HTTP 403"
+    assert sum(map(len, res.missing_mounts.values())) == 36
+
+
+def test_verify_reports_a_soft_deleted_secret_as_missing(prepared, memory_vault, ledger, state_key):
+    items, by_id = prepared
+    run(prepared, memory_vault, ledger, state_key)
+    k = ("kv-payments", "dev/orders/db_password")
+    memory_vault.store[k] = memory_vault.store[k].__class__({}, 1, {})
+    assert verify(items, by_id, memory_vault, ledger, state_key).missing == ["S001"]

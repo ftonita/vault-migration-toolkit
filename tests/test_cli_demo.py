@@ -56,8 +56,12 @@ def test_plan_report(env, capsys):
 
 def test_end_to_end_dry_run_execute_idempotent_verify_tamper(env, capsys):
     tmp, _, _, _, common = env
-    assert main(["apply", *common]) == 0
-    assert "DRY RUN" in capsys.readouterr().out and not (tmp / "fake.json").exists()
+    assert main(["apply", *common]) == 1  # the dry run already reports the missing mounts
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out and "missing mount: kv-payments/ (" in out and "failed: S" not in out
+    assert main(["apply", *common, "--create-mounts"]) == 0
+    assert "would create mount: kv-scoring/" in capsys.readouterr().out
+    assert not (tmp / "fake.json").exists()
     assert main(["apply", *common, "--execute", "--create-mounts"]) == 0
     assert "written=36" in capsys.readouterr().out
     assert main(["apply", *common, "--execute"]) == 0

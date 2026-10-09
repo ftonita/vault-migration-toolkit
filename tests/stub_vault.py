@@ -14,6 +14,9 @@ class StubState:
         self.data: dict[str, dict] = {}  # "mount/path" -> {"versions": [..], "custom": {}}
         self.fail_next_with: list[int] = []  # status codes to return before behaving normally
         self.requests: list[tuple[str, str]] = []
+        self.forbid_sys = False  # token without any sys/* capability
+        self.soft_deleted: set[str] = set()  # "mount/path" deleted with `vault kv delete`
+        self.fail_metadata_with: int | None = None
 
 
 def make_server(state: StubState) -> tuple[ThreadingHTTPServer, str]:
@@ -38,9 +41,13 @@ def make_server(state: StubState) -> tuple[ThreadingHTTPServer, str]:
             if self.headers.get("X-Vault-Token") != state.token:
                 return self._send(403, {"errors": ["permission denied"]})
             path = self.path[len("/v1/") :]
+            if state.forbid_sys and path.startswith("sys/"):
+                return self._send(403, {"errors": ["permission denied"]})
             if path == "sys/mounts" and method == "GET":
                 return self._send(200, {"data": {f"{m}/": {"type": "kv"} for m in state.mounts}})
             if path.startswith("sys/mounts/") and method == "POST":
+                if path[len("sys/mounts/") :] in state.mounts:
+                    return self._send(400, {"errors": [f"path is already in use at {path[11:]}/"]})
                 state.mounts.add(path[len("sys/mounts/") :])
                 return self._send(204)
             mount, kind, _, rest = (
@@ -50,13 +57,15 @@ def make_server(state: StubState) -> tuple[ThreadingHTTPServer, str]:
                 "/".join(path.split("/")[2:]),
             )
             key = f"{mount}/{rest}"
-            if mount not in state.mounts:
-                return self._send(404, {"errors": []})
+            if mount not in state.mounts:  # what real Vault answers for an unknown mount
+                return self._send(404, {"errors": [f'no handler for route "{path}". route entry not found.']})
             if kind == "data" and method == "GET":
                 entry = state.data.get(key)
                 if not entry:
                     return self._send(404, {"errors": []})
                 v = len(entry["versions"])
+                if key in state.soft_deleted:
+                    return self._send(404, {"data": {"data": None, "metadata": {"version": v}}})
                 return self._send(
                     200,
                     {
@@ -77,6 +86,8 @@ def make_server(state: StubState) -> tuple[ThreadingHTTPServer, str]:
                     )
                 entry["versions"].append(body["data"])
                 return self._send(200, {"data": {"version": len(entry["versions"])}})
+            if kind == "metadata" and method == "POST" and state.fail_metadata_with:
+                return self._send(state.fail_metadata_with, {"errors": ["permission denied"]})
             if kind == "metadata" and method == "POST":
                 state.data[key]["custom"] = body["custom_metadata"]
                 return self._send(204)

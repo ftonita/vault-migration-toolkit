@@ -1,0 +1,11 @@
+id,name,value,app,env,team,kind,last_rotated,consumers
+LEG-0001,db_password,SYNTHETIC-db-9f2c41d07a6e4b1c8d35,orders,prod,payments,db_password,2026-08-14,orders-api;orders-worker
+LEG-0002,db_password,SYNTHETIC-db-1b7e93c2f0a84d6e5c19,orders,staging,payments,db_password,2026-07-02,orders-api
+LEG-0003,stripe_api_key,SYNTHETIC-api-4c0d8e2a7b95f1361e7a,orders,prod,payments,api_key,2026-05-20,orders-api
+LEG-0004,db_password,SYNTHETIC-db-77a1e05c3d9b42f8a6e0,ledger,production,Payments Team,db_password,2026-09-01,ledger-svc
+LEG-0005,jwt_secret,SYNTHETIC-jwt-c58b2f9e0d1a7346bb2c,scorer,prod,scoring,token,2024-11-30,scorer-api;scorer-batch
+LEG-0006,s3_secret_key,SYNTHETIC-s3-0e6f3a92c7d84b15f2a8,reports,staging,,api_key,2026-04-04,reports-cron
+LEG-0007,tls_key_passphrase,changeme,gateway,dev,platform,password,2025-12-01,gateway
+LEG-0008,oauth_client_secret,SYNTHETIC-oauth-5a9d1c3e7f20b846d1,gateway,prod,platform,token,,gateway
+LEG-0009,db_password,SYNTHETIC-db-e3b8a0f61c2d975a4e3f,orders,qa,payments,db_password,2026-06-11,orders-api
+LEG-0010,ftp_password,SYNTHETIC-ftp-2d4f6a8c0e1b3d5f7a9c,legacy-cron,prod,,password,2023-02-17,
