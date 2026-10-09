@@ -37,7 +37,7 @@ pip install .
 vault-migrate demo --out data                       # synthetic legacy export + rules
 vault-migrate inventory --source data/legacy.json --state st --today 2026-10-08
 A="--source data/legacy.json --rules data/rules.yml --state st --backend fake:st/fake-vault.json"
-vault-migrate apply  $A                             # dry run
+vault-migrate apply  $A --create-mounts             # dry run
 vault-migrate apply  $A --execute --create-mounts
 vault-migrate apply  $A --execute                   # idempotent
 vault-migrate verify $A
@@ -53,6 +53,7 @@ inventory: 9 findings (high 2, medium 5, low 2)
 plan:   36 mapped, 2 in the manual queue (S037 no owning team, S038 environment 'uat')
 
 DRY RUN (nothing written; add --execute): written=0 would_write=36 skipped=0 conflicts=0 failed=0 manual_queue=2
+  would create mount: kv-payments/, kv-platform/, kv-scoring/
 EXECUTED: written=36 would_write=0 skipped=0 conflicts=0 failed=0 manual_queue=2
 EXECUTED: written=0 would_write=0 skipped=36 conflicts=0 failed=0 manual_queue=2
 verified=36 mismatched=0 missing=0 manual_queue=2
@@ -107,7 +108,7 @@ vault-migrate plan      --source legacy.json --rules rules.yml --out plan.md
 ```bash
 export VAULT_ADDR=https://vault.example.com VAULT_TOKEN=...     # https enforced (http only for localhost)
 A="--source legacy.json --rules rules.yml --state migration-state --backend http"
-vault-migrate apply  $A                       # dry run
+vault-migrate apply  $A                       # dry run; also reports mounts that do not exist yet
 vault-migrate apply  $A --execute             # add --create-mounts if the token may create mounts
 vault-migrate verify $A                       # exit 0 = every secret in Vault matches the export
 ```
@@ -131,12 +132,12 @@ vault-migrate verify $A                       # exit 0 = every secret in Vault m
 
 ## What is verified
 
-Reproduce with `pip install -e ".[dev]" && pytest` (75 tests, 98% line coverage):
+Reproduce with `pip install -e ".[dev]" && pytest` (87 tests, 98% line coverage):
 
 - Unit tests for parsing, redaction, fingerprints, rules, analysis, planning, migration (dry-run, idempotence, conflicts, CAS overwrite, partial failure and resume) and ledger contents.
-- The HTTP client is tested over real HTTP against `tests/stub_vault.py`, a **stub that implements only the KV v2 subset used here** (data, metadata, mounts, CAS, 5xx, 403). It is not Vault, so semantics such as mount permissions and real CAS error text are assumptions from the API documentation.
+- The HTTP client is tested over real HTTP against `tests/stub_vault.py`, a **stub that implements only the KV v2 subset used here** (data, metadata, mounts, CAS, soft delete, 5xx, 403). It is not Vault, so semantics such as mount permissions and real CAS error text are assumptions from the API documentation.
 - End-to-end CLI flow on the synthetic dataset, including tampering and recovery (the output above).
 - `examples/`: the JSON and CSV samples load to identical records, the sample plan matches the docs, and every adapter's output maps cleanly with `plan` (one is also taken through `apply` and `verify`).
-- The CI job `real-vault` runs the whole flow (`apply --execute --create-mounts`, an idempotent re-run, `verify`) against a **real Vault 1.17 dev server**; it passed on the first run (2026-10-09). It also runs `examples/` with a **non-root token** limited by `examples/vault/migration-policy.hcl`.
+- The CI job `real-vault` runs the whole flow (`apply --execute --create-mounts`, an idempotent re-run, `verify`) against a **real Vault 1.17 dev server**; it passed on the first run (2026-10-09). It also runs `examples/` with a **non-root token** limited by `examples/vault/migration-policy.hcl`, which grants no `sys/*` access except creating `kv-*` mounts.
 
-**Not verified:** Vault Enterprise namespaces, production-style Vault (Raft, auth methods other than tokens), very large exports (the export is held in memory), and non-KV legacy sources. Writing custom metadata is a second request, so it is not atomic with the value.
+**Not verified:** Vault Enterprise namespaces, production-style Vault (Raft, auth methods other than tokens), very large exports (the export is held in memory), and non-KV legacy sources. Custom metadata is written by a second request, so it is not atomic with the value; if it fails, a re-run repairs it.

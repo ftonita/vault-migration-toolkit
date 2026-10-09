@@ -5,11 +5,7 @@
 #   vault policy write vault-migration examples/vault/migration-policy.hcl
 #   vault token create -policy=vault-migration -ttl=8h -display-name=vault-migration
 
-# apply/verify check that the target mount exists on every run.
-path "sys/mounts" {
-  capabilities = ["read"]
-}
-
+# No sys/* access is needed to migrate into existing mounts: a missing mount is detected from the read.
 # Only needed with --create-mounts. Drop it if mounts are created by your platform team / Terraform.
 path "sys/mounts/kv-*" {
   capabilities = ["create", "update"]

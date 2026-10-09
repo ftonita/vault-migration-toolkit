@@ -23,7 +23,7 @@ docker compose -f examples/vault/docker-compose.yml up -d     # or: vault server
 export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=dev-root-token
 
 A="--source examples/legacy.json --rules examples/rules.yml --state rehearsal-state --backend http"
-vault-migrate apply  $A                                        # dry run: would_write=8, manual_queue=2
+vault-migrate apply  $A --create-mounts                        # dry run: would_write=8, would create 3 mounts
 vault-migrate apply  $A --execute --create-mounts              # written=8
 vault-migrate apply  $A --execute                              # skipped=8 (idempotent)
 vault-migrate verify $A                                        # verified=8 mismatched=0 missing=0
@@ -46,7 +46,7 @@ Choose one of two options:
   vault secrets enable -path=kv-payments -version=2 kv
   ```
 
-Without `--create-mounts`, a missing mount makes each of its secrets `failed` with `mount kv-x/ does not exist`. The dry run does not check this, so compare the mounts first.
+The dry run already checks the mounts. Without `--create-mounts` it reports each missing one as `missing mount: kv-x/ (N secrets; create it, or add --create-mounts)` and exits with 1. With `--create-mounts` it lists `would create mount: kv-x/`.
 
 ### 3.2 Policy for the migration token
 
@@ -54,12 +54,13 @@ Without `--create-mounts`, a missing mount makes each of its secrets `failed` wi
 
 | Path | Capabilities | Why |
 |---|---|---|
-| `sys/mounts` | `read` | **Always needed**: `apply` and `verify` check that each target mount exists. Without it every run stops with `list mounts: HTTP 403`. |
 | `sys/mounts/kv-*` | `create`, `update` | Only with `--create-mounts` |
 | `kv-<team>/data/*` | `create`, `read`, `update` | `create`: new secrets; `read`: idempotency and `verify`; `update`: `--overwrite` |
 | `kv-<team>/metadata/*` | `create`, `read`, `update` | `custom_metadata` is written by a second request |
 
-Vault only allows `*` at the end of a policy path, so `kv-*/data/*` does not work: add one `data` + `metadata` block per team mount (the example has three). For `verify` alone, `read` on `data/*` and `sys/mounts` is enough.
+No `sys/*` access is needed to migrate into existing mounts: a missing mount is recognised from Vault's own answer to the secret read (404 `no handler for route`), so the tool never lists `sys/mounts`.
+
+Vault only allows `*` at the end of a policy path, so `kv-*/data/*` does not work: add one `data` + `metadata` block per team mount (the example has three). For `verify` alone, `read` on `data/*` is enough.
 
 ```bash
 vault policy write vault-migration examples/vault/migration-policy.hcl
@@ -110,6 +111,8 @@ jq -r 'select(.status=="failed" or .status=="conflict") | [.secret_id, .target, 
 
 - **Resume:** just run `apply --execute` again. Already migrated secrets are compared with what is in Vault and `skipped`; only missing ones are written.
 - **Conflict:** the target exists with a different value (someone created it by hand, or two legacy records point to it). Nothing is overwritten. Find out which value is correct; if it is the legacy one, run `apply --execute --overwrite` (CAS on the current version, the old one stays in history).
+- **Metadata:** `custom_metadata` is written by a second request. If that fails, the value is already in Vault: the secret is reported as `failed: <id> (value written as version N, but ...; re-run to repair the metadata)`. After the cause is fixed, a re-run finds the identical value and writes the missing metadata (`metadata_repaired=N`, ledger status `metadata_written`). Keys that were already there are kept.
+- **Soft-deleted target** (`vault kv delete`): `apply` treats it as a conflict and `verify` reports it as `missing`; `--overwrite` writes the next version.
 - **Manual queue:** records `plan` could not map. Fix the data or `rules.yml` (aliases, `app_owners`, `allowed_envs`) and run `plan` again; never edit target paths by hand.
 
 ## 5. Check the result in Vault
@@ -181,17 +184,16 @@ The migration copies values **as they are**. Secrets reported by `inventory` as 
 
 ## 8. Troubleshooting
 
-Configuration errors stop the run with `error: ...` on stderr and exit code 2. Inside `apply`, errors for a single secret are counted as `failed: <id> (see ledger)` and the run continues; the message itself is in the ledger's `detail` (see the `jq` command in section 4).
+Configuration errors stop the run with `error: ...` on stderr and exit code 2. Inside `apply`, an error for a single secret is printed as `failed: <id> (<reason>)` and the run continues. The same reason is in the ledger's `detail` (see the `jq` command in section 4). Secrets blocked by a missing mount are grouped into one `missing mount:` line.
 
 | Message | Cause | Fix |
 |---|---|---|
 | `VAULT_ADDR and VAULT_TOKEN must be set` | environment not exported | `export VAULT_ADDR=... VAULT_TOKEN=...` |
 | `refusing to talk to Vault over plain http (except localhost)` | `VAULT_ADDR=http://remote` | use `https://` |
 | `cannot reach Vault: ... CERTIFICATE_VERIFY_FAILED` | corporate CA not trusted | `export SSL_CERT_FILE=/path/to/ca-bundle.pem` |
-| `list mounts: HTTP 403` | no `read` on `sys/mounts` | add it to the policy (3.2) |
-| `failed: ...` + ledger `mount kv-x/ does not exist` | mount missing | create it (3.1) or add `--create-mounts` |
-| `create mount kv-x: HTTP 403` | no `create`/`update` on `sys/mounts/kv-*` | extend the policy or create mounts beforehand |
+| `missing mount: kv-x/ (N secrets; create it, or add --create-mounts)` | mount missing | create it (3.1) or add `--create-mounts` |
+| `missing mount: kv-x/ (N secrets; create mount kv-x: HTTP 403)` | no `create`/`update` on `sys/mounts/kv-*` | extend the policy or create mounts beforehand |
 | `write kv-x/...: HTTP 403` | no `create` on `kv-x/data/*` | add the team mount to the policy |
-| `metadata kv-x/...: HTTP 403` | no `update` on `kv-x/metadata/*` | fix the policy. The value **was written**, so a re-run reports it as `skipped` and does not retry the metadata; set it by hand with `vault kv metadata put -mount=kv-x -custom-metadata=legacy_id=... -custom-metadata=kind=... -custom-metadata=migrated_by=vault-migration-toolkit <path>` (this replaces all custom metadata, so pass every key) |
+| `value written as version N, but metadata kv-x/...: HTTP 403` | no `update` on `kv-x/metadata/*` | the value **is** in Vault. Fix the policy and run `apply --execute` again: it reports `metadata_repaired=N` |
 | `conflict: <id>` | target exists with another value | see section 4, *Conflicts* |
 | `mismatch: <id>` in verify | value in Vault changed after the migration | find out who changed it; `apply --execute --overwrite` restores the legacy value |

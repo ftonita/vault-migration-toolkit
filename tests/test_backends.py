@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from vault_migration.backends import CasMismatch, FileFakeVault, MemoryVault, VaultError, VaultHTTP
+from vault_migration.backends import (
+    CasMismatch,
+    FileFakeVault,
+    MemoryVault,
+    MetadataError,
+    MountMissing,
+    VaultError,
+    VaultHTTP,
+)
 
 
 def test_http_refuses_plain_http_to_remote_hosts():
@@ -103,3 +111,50 @@ def test_full_migration_through_real_http(stub, demo_secrets, rules, ledger, sta
     assert len(res.written) == 36 and res.ok
     assert verify(items, by_id, vault, ledger, state_key).ok
     assert len(apply(items, by_id, vault, ledger, state_key, execute=True).skipped) == 36
+
+
+def test_missing_mount_is_detected_from_the_read_itself(stub):
+    state, vault = stub
+    state.forbid_sys = True
+    with pytest.raises(MountMissing):
+        vault.read("kv-nope", "dev/app/x")
+    with pytest.raises(MountMissing):
+        vault.write("kv-nope", "dev/app/x", {"value": "1"}, 0, {})
+
+
+def test_create_mount_tolerates_a_mount_created_meanwhile(stub):
+    state, vault = stub
+    state.mounts.add("kv-a")
+    vault.create_mount("kv-a")  # 400 "path is already in use" is not an error
+
+
+def test_soft_deleted_secret_reads_as_empty_with_its_version(stub):
+    state, vault = stub
+    vault.create_mount("kv-a")
+    vault.write("kv-a", "p", {"value": "1"}, 0, {})
+    state.soft_deleted.add("kv-a/p")
+    got = vault.read("kv-a", "p")
+    assert got.data == {} and got.version == 1
+
+
+def test_metadata_failure_after_value_write_is_distinguishable(stub):
+    state, vault = stub
+    vault.create_mount("kv-a")
+    state.fail_metadata_with = 403
+    with pytest.raises(MetadataError, match="value written as version 1"):
+        vault.write("kv-a", "p", {"value": "1"}, 0, {"legacy_id": "S1"})
+    assert vault.read("kv-a", "p").data == {"value": "1"}
+
+
+def test_migration_needs_no_sys_access_and_never_lists_mounts(stub, demo_secrets, rules, ledger, state_key):
+    from vault_migration.migrate import apply, verify
+    from vault_migration.rules import plan
+
+    state, vault = stub
+    state.mounts |= {"kv-payments", "kv-scoring", "kv-platform"}
+    state.forbid_sys = True
+    items, _ = plan(demo_secrets, rules)
+    by_id = {s.id: s for s in demo_secrets}
+    assert apply(items, by_id, vault, ledger, state_key, execute=True).ok
+    assert verify(items, by_id, vault, ledger, state_key).ok
+    assert not any(path.startswith("/v1/sys/") for _, path in state.requests)

@@ -23,7 +23,7 @@ docker compose -f examples/vault/docker-compose.yml up -d     # или: vault se
 export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=dev-root-token
 
 A="--source examples/legacy.json --rules examples/rules.yml --state rehearsal-state --backend http"
-vault-migrate apply  $A                                        # пробный прогон: would_write=8, manual_queue=2
+vault-migrate apply  $A --create-mounts                        # пробный прогон: would_write=8, создаст 3 mount'а
 vault-migrate apply  $A --execute --create-mounts              # written=8
 vault-migrate apply  $A --execute                              # skipped=8 (идемпотентно)
 vault-migrate verify $A                                        # verified=8 mismatched=0 missing=0
@@ -46,7 +46,7 @@ Dev-сервер хранит данные в памяти и стартует �
   vault secrets enable -path=kv-payments -version=2 kv
   ```
 
-Без `--create-mounts` отсутствующий mount переводит каждый его секрет в `failed` с сообщением `mount kv-x/ does not exist`. Пробный прогон этого не проверяет, поэтому сверьте mount'ы заранее.
+Пробный прогон уже проверяет mount'ы. Без `--create-mounts` он сообщает о каждом отсутствующем строкой `missing mount: kv-x/ (N secrets; create it, or add --create-mounts)` и завершается с кодом 1. С `--create-mounts` выводит `would create mount: kv-x/`.
 
 ### 3.2 Политика для токена миграции
 
@@ -54,12 +54,13 @@ Dev-сервер хранит данные в памяти и стартует �
 
 | Путь | Права | Зачем |
 |---|---|---|
-| `sys/mounts` | `read` | **Нужно всегда**: `apply` и `verify` проверяют, что целевой mount существует. Без этого права запуск падает с `list mounts: HTTP 403`. |
 | `sys/mounts/kv-*` | `create`, `update` | Только с `--create-mounts` |
 | `kv-<team>/data/*` | `create`, `read`, `update` | `create` — новые секреты; `read` — идемпотентность и `verify`; `update` — `--overwrite` |
 | `kv-<team>/metadata/*` | `create`, `read`, `update` | `custom_metadata` пишется вторым запросом |
 
-Vault допускает `*` только в конце пути политики, поэтому `kv-*/data/*` не сработает: добавьте пару блоков `data` + `metadata` на каждый mount команды (в примере их три). Для одного только `verify` достаточно `read` на `data/*` и `sys/mounts`.
+Для миграции в существующие mount'ы доступ к `sys/*` не нужен: отсутствие mount'а распознаётся по ответу Vault на чтение самого секрета (404 `no handler for route`), поэтому инструмент вообще не обращается к `sys/mounts`.
+
+Vault допускает `*` только в конце пути политики, поэтому `kv-*/data/*` не сработает: добавьте пару блоков `data` + `metadata` на каждый mount команды (в примере их три). Для одного только `verify` достаточно `read` на `data/*`.
 
 ```bash
 vault policy write vault-migration examples/vault/migration-policy.hcl
@@ -110,6 +111,8 @@ jq -r 'select(.status=="failed" or .status=="conflict") | [.secret_id, .target, 
 
 - **Продолжение после сбоя:** просто запустите `apply --execute` ещё раз. Уже перенесённые секреты сравниваются с содержимым Vault и получают статус `skipped`; записываются только недостающие.
 - **Конфликт:** по целевому пути уже лежит другое значение (кто-то создал его вручную или две записи выгрузки указывают на один путь). Ничего не перезаписывается. Выясните, какое значение верное; если из старого хранилища — запустите `apply --execute --overwrite` (CAS на текущую версию, старая остаётся в истории).
+- **Метаданные:** `custom_metadata` пишутся вторым запросом. Если он не прошёл, значение уже в Vault, а секрет помечается как `failed: <id> (value written as version N, but ...; re-run to repair the metadata)`. После устранения причины повторный запуск находит совпадающее значение и дописывает недостающие метаданные (`metadata_repaired=N`, статус в журнале `metadata_written`). Уже существующие ключи сохраняются.
+- **Мягко удалённый секрет** (`vault kv delete`): `apply` считает его конфликтом, `verify` — отсутствующим (`missing`); `--overwrite` пишет следующую версию.
 - **Ручная очередь:** записи, которые `plan` не смог сопоставить. Исправьте данные или `rules.yml` (алиасы, `app_owners`, `allowed_envs`) и снова запустите `plan`; не правьте целевые пути вручную.
 
 ## 5. Проверка результата в Vault
@@ -181,17 +184,16 @@ rm migration-state/fingerprint.key    # отпечатки в журнале с�
 
 ## 8. Разбор ошибок
 
-Ошибки конфигурации останавливают запуск с `error: ...` в stderr и кодом 2. Внутри `apply` ошибка по отдельному секрету засчитывается как `failed: <id> (see ledger)`, и запуск продолжается; само сообщение — в поле `detail` журнала (команда `jq` в разделе 4).
+Ошибки конфигурации останавливают запуск с `error: ...` в stderr и кодом 2. Внутри `apply` ошибка по отдельному секрету выводится как `failed: <id> (<причина>)`, и запуск продолжается. Та же причина есть в поле `detail` журнала (команда `jq` в разделе 4). Секреты, заблокированные отсутствующим mount'ом, сводятся в одну строку `missing mount:`.
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `VAULT_ADDR and VAULT_TOKEN must be set` | переменные не экспортированы | `export VAULT_ADDR=... VAULT_TOKEN=...` |
 | `refusing to talk to Vault over plain http (except localhost)` | `VAULT_ADDR=http://удалённый-хост` | используйте `https://` |
 | `cannot reach Vault: ... CERTIFICATE_VERIFY_FAILED` | корпоративный CA не в доверенных | `export SSL_CERT_FILE=/path/to/ca-bundle.pem` |
-| `list mounts: HTTP 403` | нет `read` на `sys/mounts` | добавьте в политику (3.2) |
-| `failed: ...` + в журнале `mount kv-x/ does not exist` | нет mount'а | создайте (3.1) или добавьте `--create-mounts` |
-| `create mount kv-x: HTTP 403` | нет `create`/`update` на `sys/mounts/kv-*` | расширьте политику или создайте mount'ы заранее |
+| `missing mount: kv-x/ (N secrets; create it, or add --create-mounts)` | нет mount'а | создайте (3.1) или добавьте `--create-mounts` |
+| `missing mount: kv-x/ (N secrets; create mount kv-x: HTTP 403)` | нет `create`/`update` на `sys/mounts/kv-*` | расширьте политику или создайте mount'ы заранее |
 | `write kv-x/...: HTTP 403` | нет `create` на `kv-x/data/*` | добавьте mount команды в политику |
-| `metadata kv-x/...: HTTP 403` | нет `update` на `kv-x/metadata/*` | исправьте политику. Значение **уже записано**, поэтому повторный запуск покажет `skipped` и метаданные не допишет; задайте их вручную: `vault kv metadata put -mount=kv-x -custom-metadata=legacy_id=... -custom-metadata=kind=... -custom-metadata=migrated_by=vault-migration-toolkit <path>` (команда заменяет все пользовательские метаданные, передайте каждый ключ) |
+| `value written as version N, but metadata kv-x/...: HTTP 403` | нет `update` на `kv-x/metadata/*` | значение **уже** в Vault. Исправьте политику и снова запустите `apply --execute`: он покажет `metadata_repaired=N` |
 | `conflict: <id>` | по пути уже другое значение | см. раздел 4, *Конфликт* |
 | `mismatch: <id>` в verify | значение в Vault изменили после миграции | выясните, кто изменил; `apply --execute --overwrite` вернёт значение из выгрузки |

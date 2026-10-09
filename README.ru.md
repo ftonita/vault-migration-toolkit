@@ -37,7 +37,7 @@ pip install .
 vault-migrate demo --out data                       # синтетическая выгрузка + правила
 vault-migrate inventory --source data/legacy.json --state st --today 2026-10-08
 A="--source data/legacy.json --rules data/rules.yml --state st --backend fake:st/fake-vault.json"
-vault-migrate apply  $A                             # пробный прогон
+vault-migrate apply  $A --create-mounts             # пробный прогон
 vault-migrate apply  $A --execute --create-mounts
 vault-migrate apply  $A --execute                   # повторно: ничего не меняется
 vault-migrate verify $A
@@ -53,6 +53,7 @@ inventory: 9 findings (high 2, medium 5, low 2)
 plan:   36 mapped, 2 in the manual queue (S037 no owning team, S038 environment 'uat')
 
 DRY RUN (nothing written; add --execute): written=0 would_write=36 skipped=0 conflicts=0 failed=0 manual_queue=2
+  would create mount: kv-payments/, kv-platform/, kv-scoring/
 EXECUTED: written=36 would_write=0 skipped=0 conflicts=0 failed=0 manual_queue=2
 EXECUTED: written=0 would_write=0 skipped=36 conflicts=0 failed=0 manual_queue=2
 verified=36 mismatched=0 missing=0 manual_queue=2
@@ -107,7 +108,7 @@ vault-migrate plan      --source legacy.json --rules rules.yml --out plan.md
 ```bash
 export VAULT_ADDR=https://vault.example.com VAULT_TOKEN=...     # только https (http разрешён лишь для localhost)
 A="--source legacy.json --rules rules.yml --state migration-state --backend http"
-vault-migrate apply  $A                       # пробный прогон
+vault-migrate apply  $A                       # пробный прогон; заодно покажет ещё не созданные mount'ы
 vault-migrate apply  $A --execute             # добавьте --create-mounts, если токену можно создавать mount'ы
 vault-migrate verify $A                       # код 0 = каждый секрет в Vault совпадает с выгрузкой
 ```
@@ -131,12 +132,12 @@ vault-migrate verify $A                       # код 0 = каждый секр
 
 ## Что проверено
 
-Воспроизвести: `pip install -e ".[dev]" && pytest` (75 тестов, покрытие строк 98%):
+Воспроизвести: `pip install -e ".[dev]" && pytest` (87 тестов, покрытие строк 98%):
 
 - Модульные тесты разбора, маскирования, отпечатков, правил, анализа, планирования, миграции (dry-run, идемпотентность, конфликты, перезапись с CAS, частичный сбой и продолжение) и содержимого журнала.
-- HTTP-клиент тестируется по настоящему HTTP против `tests/stub_vault.py` — **заглушки, реализующей только используемое подмножество KV v2** (data, metadata, mounts, CAS, 5xx, 403). Это не Vault, поэтому такие вещи, как права на mount'ы и точный текст ошибки CAS, взяты из документации API.
+- HTTP-клиент тестируется по настоящему HTTP против `tests/stub_vault.py` — **заглушки, реализующей только используемое подмножество KV v2** (data, metadata, mounts, CAS, мягкое удаление, 5xx, 403). Это не Vault, поэтому такие вещи, как права на mount'ы и точный текст ошибки CAS, взяты из документации API.
 - Сквозной прогон CLI на синтетических данных, включая ручную порчу и восстановление (вывод выше).
 - `examples/`: JSON- и CSV-примеры загружаются в одинаковые записи, план по примеру совпадает с документацией, выгрузка каждого адаптера без остатка проходит `plan` (одна — ещё и `apply` и `verify`).
-- CI-задача `real-vault` прогоняет весь процесс (`apply --execute --create-mounts`, повторный идемпотентный запуск, `verify`) против **настоящего Vault 1.17 в dev-режиме**; первый прогон прошёл 2026-10-09. Там же `examples/` прогоняется с **не-root токеном**, ограниченным `examples/vault/migration-policy.hcl`.
+- CI-задача `real-vault` прогоняет весь процесс (`apply --execute --create-mounts`, повторный идемпотентный запуск, `verify`) против **настоящего Vault 1.17 в dev-режиме**; первый прогон прошёл 2026-10-09. Там же `examples/` прогоняется с **не-root токеном**, ограниченным `examples/vault/migration-policy.hcl`: из `sys/*` он может только создавать mount'ы `kv-*`.
 
-**Не проверено:** namespace'ы Vault Enterprise, Vault в боевой конфигурации (Raft, методы аутентификации кроме токенов), очень большие выгрузки (выгрузка целиком держится в памяти) и источники, отличные от KV. Пользовательские метаданные пишутся вторым запросом, поэтому запись не атомарна со значением.
+**Не проверено:** namespace'ы Vault Enterprise, Vault в боевой конфигурации (Raft, методы аутентификации кроме токенов), очень большие выгрузки (выгрузка целиком держится в памяти) и источники, отличные от KV. Пользовательские метаданные пишутся вторым запросом, поэтому запись не атомарна со значением; если она не удалась, повторный запуск их допишет.

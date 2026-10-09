@@ -12,7 +12,8 @@ from pathlib import Path
 class Entry:
     secret_id: str
     target: str
-    status: str  # written | skipped_identical | conflict | failed | verified | mismatch | missing
+    # written | skipped_identical | metadata_written | conflict | failed | verified | mismatch | missing
+    status: str
     fingerprint8: str
     detail: str = ""
     at: str = ""

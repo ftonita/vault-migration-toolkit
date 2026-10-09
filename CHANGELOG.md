@@ -11,6 +11,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `docs/VAULT.md` / `docs/VAULT.ru.md`: layout in Vault, mounts, token policy, running and resuming, checks with the `vault` CLI, switching consumers, rollback, troubleshooting.
 - Tests for `examples/`; CI runs `examples/` against real Vault with a non-root token limited by the example policy.
 
+### Fixed
+- The migration token no longer needs `read` on `sys/mounts`: a missing mount is detected from the secret read (Vault's 404 `no handler for route`). `sys/mounts/kv-*` is only needed with `--create-mounts`.
+- `sys/mounts` is no longer requested twice per secret; known-missing mounts are not asked again.
+- The dry run reports missing mounts (`missing mount: kv-x/ (N secrets; ...)`, exit 1), or the mounts it would create with `--create-mounts`. A failed mount creation is tried once and reported per mount.
+- If custom metadata cannot be written after the value, the error says the value is in Vault, and a re-run writes the missing metadata (`metadata_repaired`, ledger status `metadata_written`) instead of skipping the secret.
+- Soft-deleted targets: `apply` reports a conflict instead of failing on check-and-set; `verify` reports them as missing.
+- `failed:` lines show the reason instead of "see ledger".
+
 ## [1.0.0] - 2026-10-08
 
 ### Added
